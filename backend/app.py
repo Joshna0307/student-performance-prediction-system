@@ -96,3 +96,67 @@ def upload():
   df=pd.read_csv(f);return jsonify(rows=len(df),columns=list(df.columns),message='CSV parsed; batch mapping is a future step.')
  except Exception as ex:return jsonify(error=str(ex)),400
 if __name__=='__main__':app.run(host='0.0.0.0',port=5000,debug=True)
+
+# Role-based authentication. Student registration is public; faculty requires an invite code; admin is provisioned from environment variables.
+import secrets
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+app.config['SECRET_KEY']=os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+TOKEN_SERIALIZER=URLSafeTimedSerializer(app.config['SECRET_KEY'],salt='edupredict-auth')
+def auth_token(user_id): return TOKEN_SERIALIZER.dumps({'user_id':user_id})
+def current_user():
+ h=request.headers.get('Authorization','')
+ if not h.startswith('Bearer '): return None
+ try:
+  data=TOKEN_SERIALIZER.loads(h[7:],max_age=60*60*24*7)
+  with db() as c: row=c.execute('SELECT id,name,email,role FROM users WHERE id=? AND active=1',(data['user_id'],)).fetchone()
+  return dict(row) if row else None
+ except (BadSignature,SignatureExpired,KeyError): return None
+def require_roles(*roles):
+ def deco(fn):
+  @wraps(fn)
+  def wrapped(*args,**kwargs):
+   u=current_user()
+   if not u:return jsonify(error='Authentication required'),401
+   if roles and u['role'] not in roles:return jsonify(error='You are not authorized for this action'),403
+   request.current_user=u
+   return fn(*args,**kwargs)
+  return wrapped
+ return deco
+with db() as c:
+ c.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active INTEGER NOT NULL DEFAULT 1,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
+ admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
+ if admin_email and admin_password:
+  c.execute('INSERT OR IGNORE INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
+@app.post('/api/auth/register')
+def auth_register():
+ d=request.get_json(force=True) or {}; name=str(d.get('name','')).strip();email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role','student')
+ if role not in ('student','faculty'):return jsonify(error='Only student and faculty self-registration is allowed'),403
+ if not name or len(name)>100 or '@' not in email or len(email)>254:return jsonify(error='Enter a valid name and email'),400
+ if len(password)<8:return jsonify(error='Password must contain at least 8 characters'),400
+ if role=='faculty' and (not os.environ.get('FACULTY_INVITE_CODE') or not secrets.compare_digest(str(d.get('invite_code','')),os.environ['FACULTY_INVITE_CODE'])):return jsonify(error='A valid faculty invitation code is required'),403
+ try:
+  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
+  return jsonify(message='Registration successful'),201
+ except sqlite3.IntegrityError:return jsonify(error='An account with this email already exists'),409
+@app.post('/api/auth/login')
+def auth_login():
+ d=request.get_json(force=True) or {};email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role')
+ with db() as c: u=c.execute('SELECT id,name,email,password_hash,role FROM users WHERE email=? AND active=1',(email,)).fetchone()
+ if not u or not check_password_hash(u['password_hash'],password):return jsonify(error='Invalid email or password'),401
+ if role!=u['role']:return jsonify(error='This account does not have the selected role'),403
+ user={'id':u['id'],'name':u['name'],'email':u['email'],'role':u['role']}
+ return jsonify(user=user,token=auth_token(u['id']))
+@app.get('/api/auth/me')
+@require_roles('student','faculty','admin')
+def auth_me():return jsonify(user=request.current_user)
+@app.post('/api/auth/users')
+@require_roles('admin')
+def admin_create_user():
+ d=request.get_json(force=True) or {};role=d.get('role');name=str(d.get('name','')).strip();email=str(d.get('email','')).strip().lower();password=str(d.get('password',''))
+ if role not in ('faculty','admin') or not name or '@' not in email or len(password)<8:return jsonify(error='Provide valid name, email, password and faculty/admin role'),400
+ try:
+  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
+  return jsonify(message=f'{role.title()} account created'),201
+ except sqlite3.IntegrityError:return jsonify(error='Email already exists'),409
