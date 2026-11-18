@@ -1,1 +1,10 @@
-Flask\nflask-cors\npandas\nnumpy\nscikit-learn\ntensorflow\njoblib\nmatplotlib\nshap\ngunicorn
+Flask
+flask-cors
+pandas
+numpy
+scikit-learn
+tensorflow
+joblib
+matplotlib
+shap
+gunicorn
