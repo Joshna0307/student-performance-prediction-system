@@ -12,21 +12,33 @@ def init_db():
   c.execute('CREATE TABLE IF NOT EXISTS students(id INTEGER PRIMARY KEY, name TEXT, email TEXT UNIQUE)')
   c.execute('CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY, student_id INTEGER, data TEXT, predicted REAL, category TEXT, risk TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
 init_db()
+# Load compact ANN weights once. TensorFlow is used for training, not serving,
+# keeping prediction workers small enough for low-memory hosting.
+_INFERENCE_CACHE=None
 def load_model():
- if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-  from tensorflow.keras.models import load_model
+ global _INFERENCE_CACHE
+ if _INFERENCE_CACHE is not None:return _INFERENCE_CACHE
+ weights_path='model/ann_weights.npz'
+ if os.path.exists(weights_path) and os.path.exists(SCALER_PATH):
   import joblib
-  return load_model(MODEL_PATH),joblib.load(SCALER_PATH)
+  archive=np.load(weights_path)
+  weights=[archive[f'arr_{i}'] for i in range(8)]
+  _INFERENCE_CACHE=(weights,joblib.load(SCALER_PATH))
+  return _INFERENCE_CACHE
  return None,None
 def category(m): return 'Excellent' if m>=85 else 'Good' if m>=70 else 'Average' if m>=50 else 'Needs Improvement'
 def risk(d,p):
  score=sum([d['attendance']<70,d['study_hours']<1.5,d['internal_marks']<45,d['assignment_score']<45,d['test_scores']<45,d['historical_performance']<50])
  return 'High Risk' if score>=4 or p<45 else 'Medium Risk' if score>=2 or p<60 else 'Low Risk'
 def predict(d):
- model,scaler=load_model()
- if model is None:return None,'ANN not trained yet. Run python train.py in backend.'
- x=np.array([[float(d[k]) for k in FEATURES]])
- return float(np.clip(model.predict(scaler.transform(x),verbose=0)[0][0],0,100)),None
+ weights,scaler=load_model()
+ if weights is None:return None,'ANN not trained yet. Run python train.py in backend.'
+ x=scaler.transform(np.array([[float(d[k]) for k in FEATURES]],dtype=float))
+ # Dense(ReLU) -> Dropout(no-op at inference) -> Dense(ReLU) -> Dense(ReLU) -> Dense(linear)
+ for i in range(0,8,2):
+  x=x @ weights[i] + weights[i+1]
+  if i<6:x=np.maximum(x,0)
+ return float(np.clip(x[0,0],0,100)),None
 @app.get('/api/health')
 def health():return jsonify(status='ok',model_ready=os.path.exists(MODEL_PATH))
 @app.post('/api/predict')
