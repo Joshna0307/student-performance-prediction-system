@@ -175,7 +175,7 @@ def save_attendance_bulk():
    return jsonify(message=f"Attendance saved for {len(clean)} students",saved_count=len(clean)),200
   except (TypeError,ValueError):return jsonify(error='Invalid student ID or date'),400
 
-with db() as c:
+ with db() as c:
  c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
  c.execute('ALTER TABLE records ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
@@ -195,7 +195,7 @@ def auth_register():
 @app.post('/api/auth/login')
 def auth_login():
  d=request.get_json(force=True) or {};email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role')
-with db() as c: u=c.execute('SELECT id,name,email,password_hash,role FROM users WHERE email=%s AND active=TRUE',(email,)).fetchone()
+ with db() as c: u=c.execute('SELECT id,name,email,password_hash,role FROM users WHERE email=%s AND active=TRUE',(email,)).fetchone()
  if not u or not check_password_hash(u['password_hash'],password):return jsonify(error='Invalid email or password'),401
  if role!=u['role']:return jsonify(error='This account does not have the selected role'),403
  user={'id':u['id'],'name':u['name'],'email':u['email'],'role':u['role']}
@@ -217,7 +217,7 @@ def admin_create_user():
 @app.get('/api/admin/overview')
 @require_roles('admin')
 def admin_overview():
-with db() as c:
+ with db() as c:
   counts=c.execute("SELECT role,COUNT(*) AS total FROM users WHERE active=TRUE GROUP BY role").fetchall()
   recent=c.execute("SELECT id,name,email,role,created_at FROM users WHERE active=TRUE ORDER BY id DESC").fetchall()
  totals={'student':0,'faculty':0,'admin':0}
@@ -227,7 +227,7 @@ with db() as c:
 @app.get('/api/faculty/students')
 @require_roles('faculty','admin')
 def faculty_students():
-with db() as c:
+ with db() as c:
   rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=TRUE ORDER BY lower(name)").fetchall()
  return jsonify(students=[dict(x) for x in rows],total=len(rows))
 
@@ -240,7 +240,7 @@ with db() as c:
 @require_roles('student','faculty','admin')
 def get_attendance():
  u=request.current_user
-with db() as c:
+ with db() as c:
   if u['role']=='student':
    rows=c.execute("SELECT a.id,a.student_id,u.name AS student_name,a.course,a.attendance_date,a.status,a.updated_at FROM attendance a JOIN users u ON u.id=a.student_id WHERE a.student_id=%s ORDER BY a.attendance_date DESC",(u['id'],)).fetchall()
   else:
@@ -288,7 +288,7 @@ with db() as c:
 @require_roles('student','faculty','admin')
 def list_quizzes():
  u=request.current_user
-with db() as c:
+ with db() as c:
   if u['role']=='student':
    rows=c.execute("SELECT id,title,subject,instructions,questions,created_at FROM quizzes WHERE published=TRUE ORDER BY created_at DESC").fetchall()
   else:
@@ -312,7 +312,7 @@ def create_quiz():
   if not prompt or not isinstance(options,list) or len(options)!=4 or any(not str(x).strip() for x in options) or not isinstance(correct,int) or correct not in range(4):
    return jsonify(error='Each question needs text, four options and one correct answer'),400
   clean.append({'prompt':prompt,'options':[str(x).strip() for x in options],'correct_index':correct})
-with db() as c:
+ with db() as c:
   row=c.execute("INSERT INTO quizzes(title,subject,instructions,questions,created_by) VALUES(%s,%s,%s,%s::jsonb,%s) RETURNING id,title,subject,created_at",(title,subject,instructions,json.dumps(clean),request.current_user['id'])).fetchone()
  return jsonify(message='Quiz created and published',quiz=dict(row)),201
 
@@ -321,7 +321,7 @@ with db() as c:
 def submit_quiz(quiz_id):
  d=request.get_json(force=True) or {};answers=d.get('answers')
  if not isinstance(answers,list):return jsonify(error='Submit an answer for each question'),400
-with db() as c:
+ with db() as c:
   quiz=c.execute("SELECT id,questions FROM quizzes WHERE id=%s AND published=TRUE",(quiz_id,)).fetchone()
   if not quiz:return jsonify(error='Quiz not found'),404
   questions=quiz['questions']
@@ -334,7 +334,7 @@ with db() as c:
 @require_roles('student','faculty','admin')
 def quiz_results():
  u=request.current_user
-with db() as c:
+ with db() as c:
   if u['role']=='student':
    rows=c.execute("SELECT a.id,q.title,q.subject,a.score,a.total,a.submitted_at FROM quiz_attempts a JOIN quizzes q ON q.id=a.quiz_id WHERE a.student_id=%s ORDER BY a.submitted_at DESC",(u['id'],)).fetchall()
   else:
