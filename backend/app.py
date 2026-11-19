@@ -194,3 +194,33 @@ def faculty_students():
  with db() as c:
   rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=TRUE ORDER BY lower(name)").fetchall()
  return jsonify(students=[dict(x) for x in rows],total=len(rows))
+
+
+# Faculty-controlled attendance; students have read-only access.
+with db() as c:
+ c.execute("CREATE TABLE IF NOT EXISTS attendance(id BIGSERIAL PRIMARY KEY, student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, course TEXT NOT NULL, attendance_date DATE NOT NULL, status TEXT NOT NULL CHECK(status IN ('Present','Absent','Late')), marked_by BIGINT NOT NULL REFERENCES users(id), updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(student_id,course,attendance_date))")
+
+@app.get('/api/attendance')
+@require_roles('student','faculty','admin')
+def get_attendance():
+ u=request.current_user
+ with db() as c:
+  if u['role']=='student':
+   rows=c.execute("SELECT a.id,a.student_id,u.name AS student_name,a.course,a.attendance_date,a.status,a.updated_at FROM attendance a JOIN users u ON u.id=a.student_id WHERE a.student_id=%s ORDER BY a.attendance_date DESC",(u['id'],)).fetchall()
+  else:
+   rows=c.execute("SELECT a.id,a.student_id,u.name AS student_name,a.course,a.attendance_date,a.status,a.updated_at,m.name AS marked_by_name FROM attendance a JOIN users u ON u.id=a.student_id JOIN users m ON m.id=a.marked_by ORDER BY a.attendance_date DESC,u.name",()).fetchall()
+ return jsonify(attendance=[dict(x) for x in rows])
+
+@app.post('/api/attendance')
+@require_roles('faculty','admin')
+def save_attendance():
+ d=request.get_json(force=True) or {}
+ try:
+  sid=int(d.get('student_id'));course=str(d.get('course','')).strip();day=str(d.get('attendance_date','')).strip();status=str(d.get('status','')).title()
+  if not course or len(course)>120 or status not in ('Present','Absent','Late'):return jsonify(error='Enter course and valid attendance status'),400
+  with db() as c:
+   student=c.execute("SELECT id FROM users WHERE id=%s AND role='student' AND active=TRUE",(sid,)).fetchone()
+   if not student:return jsonify(error='Student account not found'),404
+   row=c.execute("INSERT INTO attendance(student_id,course,attendance_date,status,marked_by) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(student_id,course,attendance_date) DO UPDATE SET status=EXCLUDED.status,marked_by=EXCLUDED.marked_by,updated_at=CURRENT_TIMESTAMP RETURNING id,student_id,course,attendance_date,status",(sid,course,day,status,request.current_user['id'])).fetchone()
+  return jsonify(message='Attendance saved successfully',attendance=dict(row)),201
+ except (TypeError,ValueError):return jsonify(error='Select a valid student and date'),400
