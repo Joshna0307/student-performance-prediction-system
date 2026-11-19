@@ -111,6 +111,29 @@ def upload():
  try:
   df=pd.read_csv(f);return jsonify(rows=len(df),columns=list(df.columns),message='CSV parsed; batch mapping is a future step.')
  except Exception as ex:return jsonify(error=str(ex)),400
+
+@app.post('/api/attendance/bulk')
+@require_roles('faculty','admin')
+def save_attendance_bulk():
+ d=request.get_json(force=True) or {}
+ course=str(d.get('course','')).strip();day=str(d.get('attendance_date','')).strip();items=d.get('attendance',[])
+ if not course or len(course)>120 or not day or not isinstance(items,list) or not items:
+  return jsonify(error='Provide course, date and the full class attendance list'),400
+ try:
+  clean=[]
+  for item in items:
+   sid=int(item.get('student_id'));status=str(item.get('status','')).title()
+   if status not in ('Present','Absent'):return jsonify(error='Each student must be marked Present or Absent'),400
+   clean.append((sid,course,day,status,request.current_user['id']))
+  with db() as c:
+   ids=[x[0] for x in clean]
+   valid=c.execute("SELECT id FROM users WHERE role='student' AND active=TRUE AND id=ANY(%s)",(ids,)).fetchall()
+   if len(valid)!=len(set(ids)):return jsonify(error='One or more student accounts are invalid'),400
+   for row in clean:
+    c.execute("INSERT INTO attendance(student_id,course,attendance_date,status,marked_by) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(student_id,course,attendance_date) DO UPDATE SET status=EXCLUDED.status,marked_by=EXCLUDED.marked_by,updated_at=CURRENT_TIMESTAMP",row)
+  return jsonify(message=f"Attendance saved for {len(clean)} students",saved_count=len(clean)),200
+ except (TypeError,ValueError):return jsonify(error='Invalid student ID or date'),400
+
 if __name__=='__main__':app.run(host='0.0.0.0',port=5000,debug=True)
 
 # Role-based authentication. Student registration is public; faculty requires an invite code; admin is provisioned from environment variables.
