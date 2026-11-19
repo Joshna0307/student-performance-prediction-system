@@ -172,3 +172,21 @@ def admin_create_user():
   with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
   return jsonify(message=f'{role.title()} account created'),201
  except sqlite3.IntegrityError:return jsonify(error='Email already exists'),409
+
+
+@app.get('/api/admin/overview')
+@require_roles('admin')
+def admin_overview():
+ with db() as c:
+  counts=c.execute("SELECT role,COUNT(*) AS total FROM users WHERE active=1 GROUP BY role").fetchall()
+  recent=c.execute("SELECT id,name,email,role,created_at FROM users WHERE active=1 ORDER BY id DESC").fetchall()
+ totals={'student':0,'faculty':0,'admin':0}
+ for row in counts: totals[row['role']]=row['total']
+ return jsonify(counts=totals,total=sum(totals.values()),users=[dict(x) for x in recent])
+
+@app.get('/api/faculty/students')
+@require_roles('faculty','admin')
+def faculty_students():
+ with db() as c:
+  rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=1 ORDER BY name COLLATE NOCASE").fetchall()
+ return jsonify(students=[dict(x) for x in rows],total=len(rows))
