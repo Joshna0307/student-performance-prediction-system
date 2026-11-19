@@ -175,7 +175,7 @@ def save_attendance_bulk():
    return jsonify(message=f"Attendance saved for {len(clean)} students",saved_count=len(clean)),200
   except (TypeError,ValueError):return jsonify(error='Invalid student ID or date'),400
 
- with db() as c:
+with db() as c:
  c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
  c.execute('ALTER TABLE records ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
