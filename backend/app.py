@@ -1,15 +1,19 @@
-import os, sqlite3, json
+import os, json
+import psycopg
+from psycopg.rows import dict_row
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np, pandas as pd
 app=Flask(__name__); CORS(app)
-DB='edupredict.db'; MODEL_PATH='model/ann.keras'; SCALER_PATH='model/scaler.joblib'
+MODEL_PATH='model/ann.keras'; SCALER_PATH='model/scaler.joblib'
 FEATURES=['study_hours','attendance','previous_marks','assignment_score','internal_marks','test_scores','sleep_hours','internet_access','class_participation','historical_performance']
 def db():
- c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+ url=os.environ.get('DATABASE_URL')
+ if not url: raise RuntimeError('DATABASE_URL is not configured')
+ return psycopg.connect(url, row_factory=dict_row)
 def init_db():
  with db() as c:
-  c.execute('CREATE TABLE IF NOT EXISTS students(id INTEGER PRIMARY KEY, name TEXT, email TEXT UNIQUE)')
+  c.execute('CREATE TABLE IF NOT EXISTS students(id BIGSERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)')
   c.execute('CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY, student_id INTEGER, data TEXT, predicted REAL, category TEXT, risk TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
 init_db()
 # Load compact ANN weights once. TensorFlow is used for training, not serving,
@@ -58,7 +62,7 @@ def prediction():
   reasons=[]
   for k,label,threshold in [('attendance','Attendance',70),('study_hours','Study time',1.5),('internal_marks','Internal marks',45),('assignment_score','Assignment score',45),('test_scores','Test scores',45),('historical_performance','Historical performance',50)]:
    if d[k]<threshold:reasons.append(f'{label} is below the support threshold')
-  with db() as c:c.execute('INSERT INTO records(data,predicted,category,risk) VALUES(?,?,?,?)',(json.dumps(d),p,cat,r))
+  with db() as c:c.execute('INSERT INTO records(data,predicted,category,risk) VALUES(%s,?,?,?)',(json.dumps(d),p,cat,r))
   return jsonify(predicted_marks=round(p,2),category=cat,risk=r,reasons=reasons)
  except Exception as ex:return jsonify(error=str(ex)),400
 @app.post('/api/simulate')
@@ -122,7 +126,7 @@ def current_user():
  if not h.startswith('Bearer '): return None
  try:
   data=TOKEN_SERIALIZER.loads(h[7:],max_age=60*60*24*7)
-  with db() as c: row=c.execute('SELECT id,name,email,role FROM users WHERE id=? AND active=1',(data['user_id'],)).fetchone()
+  with db() as c: row=c.execute('SELECT id,name,email,role FROM users WHERE id=? AND active=TRUE',(data['user_id'],)).fetchone()
   return dict(row) if row else None
  except (BadSignature,SignatureExpired,KeyError): return None
 def require_roles(*roles):
@@ -137,10 +141,10 @@ def require_roles(*roles):
   return wrapped
  return deco
 with db() as c:
- c.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active INTEGER NOT NULL DEFAULT 1,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
+ c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active INTEGER NOT NULL DEFAULT 1,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
  if admin_email and admin_password:
-  c.execute('INSERT OR IGNORE INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
+  c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO NOTHING',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
 @app.post('/api/auth/register')
 def auth_register():
  d=request.get_json(force=True) or {}; name=str(d.get('name','')).strip();email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role','student')
@@ -151,7 +155,7 @@ def auth_register():
  try:
   with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
   return jsonify(message='Registration successful'),201
- except sqlite3.IntegrityError:return jsonify(error='An account with this email already exists'),409
+ except psycopg.errors.UniqueViolation:return jsonify(error='An account with this email already exists'),409
 @app.post('/api/auth/login')
 def auth_login():
  d=request.get_json(force=True) or {};email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role')
@@ -188,5 +192,5 @@ def admin_overview():
 @require_roles('faculty','admin')
 def faculty_students():
  with db() as c:
-  rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=1 ORDER BY name COLLATE NOCASE").fetchall()
+  rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=1 ORDER BY lower(name)").fetchall()
  return jsonify(students=[dict(x) for x in rows],total=len(rows))
