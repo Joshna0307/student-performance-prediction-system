@@ -14,7 +14,7 @@ def db():
 def init_db():
  with db() as c:
   c.execute('CREATE TABLE IF NOT EXISTS students(id BIGSERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)')
-  c.execute('CREATE TABLE IF NOT EXISTS records(id INTEGER PRIMARY KEY, student_id INTEGER, data TEXT, predicted REAL, category TEXT, risk TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
+  c.execute('CREATE TABLE IF NOT EXISTS records(id BIGSERIAL PRIMARY KEY, student_id BIGINT, data TEXT, predicted REAL, category TEXT, risk TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
 init_db()
 # Load compact ANN weights once. TensorFlow is used for training, not serving,
 # keeping prediction workers small enough for low-memory hosting.
@@ -62,7 +62,7 @@ def prediction():
   reasons=[]
   for k,label,threshold in [('attendance','Attendance',70),('study_hours','Study time',1.5),('internal_marks','Internal marks',45),('assignment_score','Assignment score',45),('test_scores','Test scores',45),('historical_performance','Historical performance',50)]:
    if d[k]<threshold:reasons.append(f'{label} is below the support threshold')
-  with db() as c:c.execute('INSERT INTO records(data,predicted,category,risk) VALUES(%s,?,?,?)',(json.dumps(d),p,cat,r))
+  with db() as c:c.execute('INSERT INTO records(data,predicted,category,risk) VALUES(%s,%s,%s,%s)',(json.dumps(d),p,cat,r))
   return jsonify(predicted_marks=round(p,2),category=cat,risk=r,reasons=reasons)
  except Exception as ex:return jsonify(error=str(ex)),400
 @app.post('/api/simulate')
@@ -126,7 +126,7 @@ def current_user():
  if not h.startswith('Bearer '): return None
  try:
   data=TOKEN_SERIALIZER.loads(h[7:],max_age=60*60*24*7)
-  with db() as c: row=c.execute('SELECT id,name,email,role FROM users WHERE id=? AND active=TRUE',(data['user_id'],)).fetchone()
+  with db() as c: row=c.execute('SELECT id,name,email,role FROM users WHERE id=%s AND active=TRUE',(data['user_id'],)).fetchone()
   return dict(row) if row else None
  except (BadSignature,SignatureExpired,KeyError): return None
 def require_roles(*roles):
@@ -141,7 +141,7 @@ def require_roles(*roles):
   return wrapped
  return deco
 with db() as c:
- c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active INTEGER NOT NULL DEFAULT 1,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
+ c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
  if admin_email and admin_password:
   c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO NOTHING',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
@@ -153,13 +153,13 @@ def auth_register():
  if len(password)<8:return jsonify(error='Password must contain at least 8 characters'),400
  if role=='faculty' and (not os.environ.get('FACULTY_INVITE_CODE') or not secrets.compare_digest(str(d.get('invite_code','')),os.environ['FACULTY_INVITE_CODE'])):return jsonify(error='A valid faculty invitation code is required'),403
  try:
-  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
+  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s)',(name,email,generate_password_hash(password),role))
   return jsonify(message='Registration successful'),201
  except psycopg.errors.UniqueViolation:return jsonify(error='An account with this email already exists'),409
 @app.post('/api/auth/login')
 def auth_login():
  d=request.get_json(force=True) or {};email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role')
- with db() as c: u=c.execute('SELECT id,name,email,password_hash,role FROM users WHERE email=? AND active=1',(email,)).fetchone()
+ with db() as c: u=c.execute('SELECT id,name,email,password_hash,role FROM users WHERE email=%s AND active=TRUE',(email,)).fetchone()
  if not u or not check_password_hash(u['password_hash'],password):return jsonify(error='Invalid email or password'),401
  if role!=u['role']:return jsonify(error='This account does not have the selected role'),403
  user={'id':u['id'],'name':u['name'],'email':u['email'],'role':u['role']}
@@ -173,17 +173,17 @@ def admin_create_user():
  d=request.get_json(force=True) or {};role=d.get('role');name=str(d.get('name','')).strip();email=str(d.get('email','')).strip().lower();password=str(d.get('password',''))
  if role not in ('faculty','admin') or not name or '@' not in email or len(password)<8:return jsonify(error='Provide valid name, email, password and faculty/admin role'),400
  try:
-  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)',(name,email,generate_password_hash(password),role))
+  with db() as c:c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s)',(name,email,generate_password_hash(password),role))
   return jsonify(message=f'{role.title()} account created'),201
- except sqlite3.IntegrityError:return jsonify(error='Email already exists'),409
+ except psycopg.errors.UniqueViolation:return jsonify(error='Email already exists'),409
 
 
 @app.get('/api/admin/overview')
 @require_roles('admin')
 def admin_overview():
  with db() as c:
-  counts=c.execute("SELECT role,COUNT(*) AS total FROM users WHERE active=1 GROUP BY role").fetchall()
-  recent=c.execute("SELECT id,name,email,role,created_at FROM users WHERE active=1 ORDER BY id DESC").fetchall()
+  counts=c.execute("SELECT role,COUNT(*) AS total FROM users WHERE active=TRUE GROUP BY role").fetchall()
+  recent=c.execute("SELECT id,name,email,role,created_at FROM users WHERE active=TRUE ORDER BY id DESC").fetchall()
  totals={'student':0,'faculty':0,'admin':0}
  for row in counts: totals[row['role']]=row['total']
  return jsonify(counts=totals,total=sum(totals.values()),users=[dict(x) for x in recent])
@@ -192,5 +192,5 @@ def admin_overview():
 @require_roles('faculty','admin')
 def faculty_students():
  with db() as c:
-  rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=1 ORDER BY lower(name)").fetchall()
+  rows=c.execute("SELECT id,name,email,created_at FROM users WHERE role='student' AND active=TRUE ORDER BY lower(name)").fetchall()
  return jsonify(students=[dict(x) for x in rows],total=len(rows))
