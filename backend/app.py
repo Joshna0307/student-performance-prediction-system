@@ -62,7 +62,9 @@ def prediction():
   reasons=[]
   for k,label,threshold in [('attendance','Attendance',70),('study_hours','Study time',1.5),('internal_marks','Internal marks',45),('assignment_score','Assignment score',45),('test_scores','Test scores',45),('historical_performance','Historical performance',50)]:
    if d[k]<threshold:reasons.append(f'{label} is below the support threshold')
-  with db() as c:c.execute('INSERT INTO records(data,predicted,category,risk) VALUES(%s,%s,%s,%s)',(json.dumps(d),p,cat,r))
+  u=current_user()
+  if not u:return jsonify(error='Please sign in again to save your assessment'),401
+  with db() as c:c.execute('INSERT INTO records(user_id,data,predicted,category,risk) VALUES(%s,%s,%s,%s,%s)',(u['id'],json.dumps(d),p,cat,r))
   return jsonify(predicted_marks=round(p,2),category=cat,risk=r,reasons=reasons)
  except Exception as ex:return jsonify(error=str(ex)),400
 @app.post('/api/simulate')
@@ -102,7 +104,15 @@ def subjects():
  return jsonify(subjects=vals,average=round(sum(vals.values())/len(vals),2),weak=weak,strong=strong,suggestions=[f'Practice and seek faculty guidance in {s}' for s in weak])
 @app.get('/api/history')
 def history():
- with db() as c:rows=c.execute('SELECT id,data,predicted,category,risk,created_at FROM records ORDER BY id DESC LIMIT 100').fetchall()
+ u=current_user()
+ if not u:return jsonify(error='Authentication required'),401
+ with db() as c:
+  if u['role']=='student':
+   rows=c.execute("SELECT r.id,u.name AS name,'' AS roll,r.predicted AS predicted_marks,r.category,r.risk,r.created_at FROM records r JOIN users u ON u.id=r.user_id WHERE r.user_id=%s ORDER BY r.id DESC LIMIT 100",(u['id'],)).fetchall()
+  elif u['role']=='faculty':
+   rows=c.execute("SELECT r.id,u.name AS name,'' AS roll,r.predicted AS predicted_marks,r.category,r.risk,r.created_at FROM records r JOIN users u ON u.id=r.user_id WHERE u.role='student' ORDER BY r.id DESC LIMIT 200").fetchall()
+  else:
+   rows=c.execute("SELECT r.id,u.name AS name,'' AS roll,r.predicted AS predicted_marks,r.category,r.risk,r.created_at FROM records r LEFT JOIN users u ON u.id=r.user_id ORDER BY r.id DESC LIMIT 200").fetchall()
  return jsonify([dict(r) for r in rows])
 @app.post('/api/upload')
 def upload():
@@ -167,6 +177,7 @@ def save_attendance_bulk():
 
 with db() as c:
  c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+  c.execute('ALTER TABLE records ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
  if admin_email and admin_password:
   c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO UPDATE SET name=EXCLUDED.name,password_hash=EXCLUDED.password_hash,role=EXCLUDED.role,active=TRUE',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
