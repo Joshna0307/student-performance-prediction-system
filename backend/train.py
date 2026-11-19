@@ -27,7 +27,7 @@ if __name__=='__main__':
     model.compile(optimizer='adam',loss='mse',metrics=['mae'])
     model.fit(Xtr,ytr,epochs=120,batch_size=32,validation_split=.15,callbacks=[EarlyStopping(patience=12,restore_best_weights=True)],verbose=1)
     pred=model.predict(Xte,verbose=0).ravel()
-    os.makedirs('model',exist_ok=True); model.save('model/ann.keras'); joblib.dump(scaler,'model/scaler.joblib')
+    os.makedirs('model',exist_ok=True); model.save('model/ann.keras'); np.savez('model/ann_weights.npz',*model.get_weights()); joblib.dump(scaler,'model/scaler.joblib')
     metrics={'mae':float(mean_absolute_error(yte,pred)),'r2':float(r2_score(yte,pred)),'data':'synthetic demonstration'}
     with open('model/metrics.json','w') as f: json.dump(metrics,f,indent=2)
     print(metrics)
