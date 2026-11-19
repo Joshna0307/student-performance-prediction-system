@@ -169,7 +169,7 @@ with db() as c:
  c.execute('CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN (\'student\',\'faculty\',\'admin\')),active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
  admin_email=os.environ.get('ADMIN_EMAIL');admin_password=os.environ.get('ADMIN_PASSWORD')
  if admin_email and admin_password:
-  c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO NOTHING',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
+  c.execute('INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO UPDATE SET name=EXCLUDED.name,password_hash=EXCLUDED.password_hash,role=EXCLUDED.role,active=TRUE',('System Administrator',admin_email.lower(),generate_password_hash(admin_password),'admin'))
 @app.post('/api/auth/register')
 def auth_register():
  d=request.get_json(force=True) or {}; name=str(d.get('name','')).strip();email=str(d.get('email','')).strip().lower();password=str(d.get('password',''));role=d.get('role','student')
