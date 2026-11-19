@@ -15,7 +15,7 @@ def init_db():
   with db() as c:
    c.execute('CREATE TABLE IF NOT EXISTS students(id BIGSERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)')
    c.execute('CREATE TABLE IF NOT EXISTS records(id BIGSERIAL PRIMARY KEY, student_id BIGINT, data TEXT, predicted REAL, category TEXT, risk TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
- init_db()
+init_db()
 # Load compact ANN weights once. TensorFlow is used for training, not serving,
 # keeping prediction workers small enough for low-memory hosting.
 _INFERENCE_CACHE=None
