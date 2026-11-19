@@ -260,3 +260,83 @@ def save_attendance():
    row=c.execute("INSERT INTO attendance(student_id,course,attendance_date,status,marked_by) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(student_id,course,attendance_date) DO UPDATE SET status=EXCLUDED.status,marked_by=EXCLUDED.marked_by,updated_at=CURRENT_TIMESTAMP RETURNING id,student_id,course,attendance_date,status",(sid,course,day,status,request.current_user['id'])).fetchone()
   return jsonify(message='Attendance saved successfully',attendance=dict(row)),201
  except (TypeError,ValueError):return jsonify(error='Select a valid student and date'),400
+
+
+# Faculty-created quizzes and server-graded student attempts.
+with db() as c:
+ c.execute("""CREATE TABLE IF NOT EXISTS quizzes(
+  id BIGSERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  instructions TEXT NOT NULL DEFAULT '',
+  questions JSONB NOT NULL,
+  created_by BIGINT NOT NULL REFERENCES users(id),
+  published BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+ )""")
+ c.execute("""CREATE TABLE IF NOT EXISTS quiz_attempts(
+  id BIGSERIAL PRIMARY KEY,
+  quiz_id BIGINT NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
+  student_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  answers JSONB NOT NULL,
+  score INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+ )""")
+
+@app.get('/api/quizzes')
+@require_roles('student','faculty','admin')
+def list_quizzes():
+ u=request.current_user
+ with db() as c:
+  if u['role']=='student':
+   rows=c.execute("SELECT id,title,subject,instructions,questions,created_at FROM quizzes WHERE published=TRUE ORDER BY created_at DESC").fetchall()
+  else:
+   rows=c.execute("SELECT q.id,q.title,q.subject,q.instructions,q.questions,q.published,q.created_at,u.name AS faculty_name FROM quizzes q JOIN users u ON u.id=q.created_by ORDER BY q.created_at DESC").fetchall()
+ out=[]
+ for row in rows:
+  item=dict(row); item['questions']=[{k:v for k,v in q.items() if k!='correct_index'} for q in item['questions']]
+  out.append(item)
+ return jsonify(quizzes=out)
+
+@app.post('/api/quizzes')
+@require_roles('faculty','admin')
+def create_quiz():
+ d=request.get_json(force=True) or {}
+ title=str(d.get('title','')).strip();subject=str(d.get('subject','')).strip();instructions=str(d.get('instructions','')).strip();questions=d.get('questions')
+ if not title or len(title)>160 or not subject or len(subject)>120 or not isinstance(questions,list) or not 1<=len(questions)<=50:
+  return jsonify(error='Enter a title, subject and between 1 and 50 questions'),400
+ clean=[]
+ for q in questions:
+  prompt=str(q.get('prompt','')).strip();options=q.get('options');correct=q.get('correct_index')
+  if not prompt or not isinstance(options,list) or len(options)!=4 or any(not str(x).strip() for x in options) or not isinstance(correct,int) or correct not in range(4):
+   return jsonify(error='Each question needs text, four options and one correct answer'),400
+  clean.append({'prompt':prompt,'options':[str(x).strip() for x in options],'correct_index':correct})
+ with db() as c:
+  row=c.execute("INSERT INTO quizzes(title,subject,instructions,questions,created_by) VALUES(%s,%s,%s,%s::jsonb,%s) RETURNING id,title,subject,created_at",(title,subject,instructions,json.dumps(clean),request.current_user['id'])).fetchone()
+ return jsonify(message='Quiz created and published',quiz=dict(row)),201
+
+@app.post('/api/quizzes/<int:quiz_id>/submit')
+@require_roles('student')
+def submit_quiz(quiz_id):
+ d=request.get_json(force=True) or {};answers=d.get('answers')
+ if not isinstance(answers,list):return jsonify(error='Submit an answer for each question'),400
+ with db() as c:
+  quiz=c.execute("SELECT id,questions FROM quizzes WHERE id=%s AND published=TRUE",(quiz_id,)).fetchone()
+  if not quiz:return jsonify(error='Quiz not found'),404
+  questions=quiz['questions']
+  if len(answers)!=len(questions):return jsonify(error='Please answer every question'),400
+  score=sum(1 for i,q in enumerate(questions) if isinstance(answers[i],int) and answers[i]==q['correct_index'])
+  row=c.execute("INSERT INTO quiz_attempts(quiz_id,student_id,answers,score,total) VALUES(%s,%s,%s::jsonb,%s,%s) RETURNING id,submitted_at",(quiz_id,request.current_user['id'],json.dumps(answers),score,len(questions))).fetchone()
+ return jsonify(message='Quiz submitted successfully',score=score,total=len(questions),percentage=round(score/len(questions)*100),attempt_id=row['id'],submitted_at=row['submitted_at'].isoformat()),201
+
+@app.get('/api/quiz-results')
+@require_roles('student','faculty','admin')
+def quiz_results():
+ u=request.current_user
+ with db() as c:
+  if u['role']=='student':
+   rows=c.execute("SELECT a.id,q.title,q.subject,a.score,a.total,a.submitted_at FROM quiz_attempts a JOIN quizzes q ON q.id=a.quiz_id WHERE a.student_id=%s ORDER BY a.submitted_at DESC",(u['id'],)).fetchall()
+  else:
+   rows=c.execute("SELECT a.id,q.title,q.subject,u.name AS student_name,a.score,a.total,a.submitted_at FROM quiz_attempts a JOIN quizzes q ON q.id=a.quiz_id JOIN users u ON u.id=a.student_id ORDER BY a.submitted_at DESC LIMIT 500").fetchall()
+ return jsonify(results=[dict(x) for x in rows])
