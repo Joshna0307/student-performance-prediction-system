@@ -56,3 +56,21 @@ export default function ModulePortal({user,onLogout}){
 function AttendanceSummary({rows}){const courses=Object.values(rows.reduce((acc,r)=>{const key=r.course||'Unknown';if(!acc[key])acc[key]={course:key,total:0,attended:0};acc[key].total++;if(r.status==='Present'||r.status==='Late')acc[key].attended++;return acc},{})).map(x=>({...x,percentage:x.total?Math.round(x.attended/x.total*100):0}));const shortage=courses.filter(c=>c.percentage<75);return <><div className="module-metrics">{courses.length?courses.map(c=><div className="module-metric" key={c.course}><small>{c.course}</small><strong>{c.percentage}%</strong><span>{c.attended} of {c.total} classes attended</span></div>):<div className="module-metric"><small>Attendance</small><strong>—</strong><span>No records yet</span></div>}</div>{shortage.length>0&&<div className="module-recommend" role="alert"><b>Attendance shortage alert:</b> {shortage.map(c=>c.course+' ('+c.percentage+'%)').join(', ')} — below the 75% requirement. Please contact your faculty.</div>}{rows.length?<div className="module-tablewrap"><table><thead><tr><th>Student</th><th>Course</th><th>Date</th><th>Status</th><th>Updated</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.student_name||'Me'}</td><td>{r.course}</td><td>{String(r.attendance_date).slice(0,10)}</td><td>{r.status}</td><td>{r.updated_at?String(r.updated_at).slice(0,16):'—'}</td></tr>)}</tbody></table></div>:<p>No attendance records available yet.</p>}</>}
 function ResultCard({result}){return <div className="module-result"><span className="eyebrow">MODEL OUTPUT</span><strong>{result.predicted_marks}<small>/100</small></strong><h3>{result.category}</h3><p>Academic risk: <b>{result.risk}</b></p>{(result.reasons||[]).map((r,i)=><p key={i}>• {r}</p>)}<small>Advisory estimate; use human review for academic decisions.</small></div>}
 function History({rows}){return rows.length?<div className="module-tablewrap"><table><thead><tr><th>Name</th><th>Register no.</th><th>Predicted marks</th><th>Category</th><th>Risk</th></tr></thead><tbody>{rows.map((r,i)=><tr key={i}><td>{r.name}</td><td>{r.roll}</td><td>{r.predicted_marks}</td><td>{r.category}</td><td>{r.risk}</td></tr>)}</tbody></table></div>:<p>No records yet. Complete an assessment to see it here.</p>}
+
+function AttendanceTable({rows=[]}){
+  if(!rows.length)return <p>No attendance has been published for your account yet. Your faculty will update this page after saving class attendance.</p>;
+  const total=rows.length;
+  const attended=rows.filter(r=>r.status==='Present'||r.status==='Late').length;
+  const percentage=Math.round(attended/total*100);
+  return <>
+    <div className="module-metrics">
+      <div className="module-metric"><small>Attendance percentage</small><strong>{percentage}%</strong><span>{attended} of {total} classes attended</span></div>
+      <div className="module-metric"><small>Present</small><strong>{rows.filter(r=>r.status==='Present').length}</strong><span>Recorded present</span></div>
+      <div className="module-metric"><small>Absent</small><strong>{rows.filter(r=>r.status==='Absent').length}</strong><span>Recorded absent</span></div>
+    </div>
+    {percentage<75&&<div className="module-recommend" role="alert"><b>Attendance shortage alert:</b> Your attendance is below 75%. Please contact your faculty.</div>}
+    <div className="module-tablewrap"><table><thead><tr><th>Subject</th><th>Date</th><th>Status</th><th>Last updated</th></tr></thead><tbody>
+      {rows.slice().sort((a,b)=>String(b.attendance_date).localeCompare(String(a.attendance_date))).map((r,i)=><tr key={r.id??i}><td>{r.course||'—'}</td><td>{String(r.attendance_date||'').slice(0,10)}</td><td><b>{r.status}</b></td><td>{r.updated_at?String(r.updated_at).slice(0,16):'—'}</td></tr>)}
+    </tbody></table></div>
+  </>;
+}
